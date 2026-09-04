@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+import mouse
 
 import cv2
 import numpy as np
@@ -97,6 +98,8 @@ class MachineGestes:
         self.deadzone_lum = float(s.get("deadzone_lum", 0.06))
         self.swipe_seuil = float(s.get("swipe_seuil", 0.22))
         self.swipe_fenetre_s = float(s.get("swipe_fenetre_s", 0.4))
+        self.swipe_v_seuil = float(s.get("swipe_v_seuil", 0.22))
+        self.swipe_v_fenetre_s = float(s.get("swipe_v_fenetre_s", 0.4))
         arm = conf.get("armement", {})
         self.arm_actif = bool(arm.get("actif", False))
         self.arm_duree_s = float(arm.get("duree_s", 2.0))
@@ -107,6 +110,9 @@ class MachineGestes:
         self._dernier_envoi = -1e9      # cooldown global (1er geste jamais bloque)
         self._pincement_base_y = None   # y de reference du pincement (glissement)
         self._hist_x = []               # (t, x) pour le swipe
+        self._hist_y_poing = []         # (t, y) pour le scroll (poing en mouvement)
+        self._dist_2mains_base = None   # distance de reference entre les 2 mains
+        self.zoom_2mains_seuil = float(s.get("zoom_2mains_seuil", 0.05))
         self._arme_jusqu = 0.0          # fenetre d'armement
         self._arm_depuis = 0.0
 
@@ -116,12 +122,44 @@ class MachineGestes:
     def _arme(self, t):
         return (not self.arm_actif) or (t < self._arme_jusqu)
 
-    def alimenter(self, lm, t):
-        """lm = 21 (x,y) normalises, ou None si aucune main. Renvoie un label ou None."""
+    def alimenter(self, lm, t, lm2=None):
+        """lm = 21 (x,y) normalises (1re main), ou None si aucune main.
+        lm2 = 21 (x,y) normalises (2e main), ou None si une seule main.
+        Renvoie un label ou None."""
+        if lm is not None and lm2 is not None:
+            # Zoom uniquement avec les DEUX mains en pincement pouce + index.
+            pince1 = est_pincement(lm, self.pincement)
+            pince2 = est_pincement(lm2, self.pincement)
+
+            if pince1 and pince2:
+                c1 = centre_paume(lm)
+                c2 = centre_paume(lm2)
+                dist = ((c1[0] - c2[0]) ** 2 + (c1[1] - c2[1]) ** 2) ** 0.5
+
+                if self._dist_2mains_base is None:
+                    self._dist_2mains_base = dist
+
+                elif self._arme(t) and self._cooldown_ok(t):
+                    if dist > self._dist_2mains_base + self.zoom_2mains_seuil:
+                        self._dist_2mains_base = dist
+                        self._dernier_envoi = t
+                        return "ecart_mains_plus"
+
+                    if dist < self._dist_2mains_base - self.zoom_2mains_seuil:
+                        self._dist_2mains_base = dist
+                        self._dernier_envoi = t
+                        return "ecart_mains_moins"
+            else:
+                self._dist_2mains_base = None
+
+            return None
+        self._dist_2mains_base = None
+
         if lm is None:
             self._geste_courant = None
             self._pincement_base_y = None
             self._hist_x.clear()
+            self._hist_y_poing.clear()
             return None
 
         # --- Armement (main levee tenue) : ouvre une fenetre "Jarvis regarde" ---
@@ -167,6 +205,22 @@ class MachineGestes:
                 # image miroir : dx>0 (main vers la droite de l'image) = swipe droite
                 return "swipe_droite" if dx > 0 else "swipe_gauche"
 
+        # --- Swipe vertical (poing en mouvement) : scroll ---
+        if est_poing(lm):
+            y_poing = lm[POIGNET][1]
+            self._hist_y_poing.append((t, y_poing))
+            self._hist_y_poing = [(tt, yy) for tt, yy in self._hist_y_poing
+                                   if t - tt <= self.swipe_v_fenetre_s]
+            if len(self._hist_y_poing) >= 3:
+                dy = self._hist_y_poing[-1][1] - self._hist_y_poing[0][1]
+                if abs(dy) >= self.swipe_v_seuil and self._arme(t) and self._cooldown_ok(t):
+                    self._dernier_envoi = t
+                    self._hist_y_poing.clear()
+                    self._geste_courant = None
+                    return "poing_bas" if dy > 0 else "poing_haut"
+        else:
+            self._hist_y_poing.clear()
+
         # --- Gestes TENUS : poing / main ouverte (1 s stable) ---
         instant = "poing" if est_poing(lm) else ("main_ouverte" if est_main_ouverte(lm) else None)
         if instant != self._geste_courant:
@@ -180,6 +234,125 @@ class MachineGestes:
             return instant
         return None
 
+
+
+# ==================================================================== SOURIS
+
+class ControleSouris:
+    """Contrôle du curseur avec l'index et clic gauche par pincement."""
+
+    def __init__(self, conf):
+        s = conf.get("souris", {}) or {}
+
+        self.actif = bool(s.get("actif", False))
+        self.vitesse = float(s.get("vitesse", 1.5))
+        self.lissage = float(s.get("lissage", 0.65))
+        self.deadzone = float(s.get("deadzone", 0.015))
+        self.seuil_pincement = float(s.get("seuil_pincement", 0.06))
+        self.cooldown_clic = float(s.get("cooldown_clic_s", 0.25))
+        self.maintien_s = float(s.get("maintien_s", 0.5))
+
+        self.x = None
+        self.y = None
+        self.dernier_clic = 0.0
+        self.pince_precedent = False
+        self.pince_depuis = None
+        self.maintien_actif = False
+        self.clic_en_attente = False
+
+        # Résolution réelle de l'écran Windows.
+        self.ecran_largeur = 1920
+        self.ecran_hauteur = 1080
+
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()
+            self.ecran_largeur = root.winfo_screenwidth()
+            self.ecran_hauteur = root.winfo_screenheight()
+            root.destroy()
+        except Exception:
+            pass
+
+        print(
+            f"[gestes] souris : {'ACTIVE' if self.actif else 'inactive'} "
+            f"({self.ecran_largeur}x{self.ecran_hauteur})",
+            file=sys.stderr
+        )
+
+    def mettre_a_jour(self, lm, t):
+        if not self.actif or lm is None:
+            self.pince_precedent = False
+            return
+
+        # Position du bout de l'index, coordonnées MediaPipe 0..1.
+        cible_x = lm[INDEX_TIP][0] * self.ecran_largeur
+        cible_y = lm[INDEX_TIP][1] * self.ecran_hauteur
+
+        if self.x is None:
+            self.x = cible_x
+            self.y = cible_y
+        else:
+            dx = cible_x - self.x
+            dy = cible_y - self.y
+
+            # Zone morte.
+            if abs(dx) < self.ecran_largeur * self.deadzone:
+                dx = 0
+            if abs(dy) < self.ecran_hauteur * self.deadzone:
+                dy = 0
+
+            # Lissage.
+            facteur = max(0.01, min(1.0, 1.0 - self.lissage))
+
+            self.x += dx * facteur * self.vitesse
+            self.y += dy * facteur * self.vitesse
+
+        self.x = max(0, min(self.ecran_largeur - 1, self.x))
+        self.y = max(0, min(self.ecran_hauteur - 1, self.y))
+
+        mouse.move(int(self.x), int(self.y), absolute=True, duration=0)
+
+        # Pincement pouce + index = clic gauche.
+        pince = distance_pincement(lm) < self.seuil_pincement
+
+        # ---------------------------------------------------------
+        # CLIC / MAINTIEN
+        # Pincement bref  -> clic gauche
+        # Pincement >= 0.5 s -> maintien du bouton gauche
+        # ---------------------------------------------------------
+        if pince:
+            if not self.pince_precedent:
+                self.pince_depuis = t
+                self.maintien_actif = False
+                self.clic_en_attente = True
+
+            elif (
+                self.clic_en_attente
+                and self.pince_depuis is not None
+                and t - self.pince_depuis >= self.maintien_s
+            ):
+                mouse.press(button="left")
+                self.maintien_actif = True
+                self.clic_en_attente = False
+                print("[gestes] souris : MAINTIEN gauche", file=sys.stderr)
+
+        else:
+            if self.maintien_actif:
+                mouse.release(button="left")
+                print("[gestes] souris : relâchement gauche", file=sys.stderr)
+
+            elif self.clic_en_attente:
+                if t - self.dernier_clic >= self.cooldown_clic:
+                    mouse.click(button="left")
+                    self.dernier_clic = t
+                    print("[gestes] souris : clic gauche", file=sys.stderr)
+
+            self.pince_depuis = None
+            self.maintien_actif = False
+            self.clic_en_attente = False
+
+        self.pince_precedent = pince
 
 # ==================================================================== I/O
 
@@ -198,6 +371,20 @@ def _landmarks_np(res):
     return [(p.x, p.y) for p in res.hand_landmarks[0]]
 
 
+def _landmarks_2e_main(res):
+    """Extrait la 2e main (si presente) en liste de (x,y) normalises, ou None."""
+    if not res.hand_landmarks or len(res.hand_landmarks) < 2:
+        return None
+    return [(p.x, p.y) for p in res.hand_landmarks[1]]
+
+
+def centre_paume(lm):
+    """Centre approximatif de la paume (moyenne poignet + base des doigts)."""
+    xs = [lm[0][0], lm[5][0], lm[9][0], lm[13][0], lm[17][0]]
+    ys = [lm[0][1], lm[5][1], lm[9][1], lm[13][1], lm[17][1]]
+    return (sum(xs) / len(xs), sum(ys) / len(ys))
+
+
 def boucle(conf, calibrer=False):
     device = int(conf.get("device", 0))
     fps = int(conf.get("fps", 24))
@@ -209,12 +396,12 @@ def boucle(conf, calibrer=False):
     conf_track = float(conf.get("confiance_suivi", 0.7))
     base = mp_python.BaseOptions(model_asset_path=modele)
     options = mp_vision.HandLandmarkerOptions(
-        base_options=base, num_hands=1,
+        base_options=base, num_hands=2,
         running_mode=mp_vision.RunningMode.VIDEO,
         min_hand_detection_confidence=conf_det, min_tracking_confidence=conf_track)
     landmarker = mp_vision.HandLandmarker.create_from_options(options)
 
-    cap = cv2.VideoCapture(device, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(device, cv2.CAP_MSMF)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(conf.get("largeur", 640)))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(conf.get("hauteur", 480)))
     if not cap.isOpened():
@@ -222,6 +409,7 @@ def boucle(conf, calibrer=False):
         return
 
     fsm = MachineGestes(conf)
+    souris = ControleSouris(conf)
     periode = 1.0 / max(5, fps)
     print(f"[gestes] tracker demarre (device {device}, {fps} fps){' — CALIBRATION' if calibrer else ''}",
           file=sys.stderr)
@@ -238,8 +426,11 @@ def boucle(conf, calibrer=False):
             image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             res = landmarker.detect_for_video(image, int(t0 * 1000))
             lm = _landmarks_np(res)
+            lm2 = _landmarks_2e_main(res)
 
-            geste = fsm.alimenter(lm, t0)
+            souris.mettre_a_jour(lm, t0)
+
+            geste = fsm.alimenter(lm, t0, lm2=lm2)
             if geste and not calibrer:
                 _envoyer(url, token, geste)
 

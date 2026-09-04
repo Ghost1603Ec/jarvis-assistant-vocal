@@ -179,6 +179,41 @@ def auto_ajouter(titre, artiste):
 
 # ------------------------------------------------------ outils
 
+def _titre_en_cours():
+    """Renvoie l'ID Spotify du titre actuellement en lecture, ou None."""
+    try:
+        r = requests.get(f"{_API}/me/player/currently-playing", headers=_h(), timeout=8)
+        if r.status_code == 204 or not r.content:
+            return None, None
+        d = r.json()
+        item = d.get("item") or {}
+        return item.get("id"), item.get("name")
+    except Exception:
+        return None, None
+
+
+@outil(
+    nom="liker_titre_actuel",
+    description="Ajoute le titre actuellement en lecture sur Spotify aux titres "
+                "likes (favoris). A utiliser pour 'ajoute ca', 'like ce titre', "
+                "'j'aime cette chanson', 'ajoute' pendant qu'une musique joue.",
+)
+def liker_titre_actuel() -> str:
+    if not _configure():
+        return _msg_config()
+    track_id, nom = _titre_en_cours()
+    if not track_id:
+        return "Aucun titre en cours de lecture sur Spotify."
+    try:
+        r = requests.put(f"{_API}/me/tracks", headers=_h(),
+                         json={"ids": [track_id]}, timeout=8)
+        if r.status_code not in (200, 204):
+            return f"Impossible d'ajouter le titre (code {r.status_code})."
+        return f"{nom} ajoute a tes titres likes."
+    except Exception as e:
+        return f"Impossible d'ajouter le titre : {e}"
+
+
 @outil(
     nom="ajouter_a_playlist",
     description="Ajoute la DERNIÈRE musique reconnue (ou un titre donné) à une playlist "

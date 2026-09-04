@@ -33,16 +33,20 @@ _DERNIER = 0.0         # anti-rebond côté Jarvis (en plus du cooldown du track
 # Mapping par défaut geste -> action (surchargé par config.yaml gestes.mapping).
 # TOUTES les actions ici sont N1/N2 par construction.
 _MAPPING_DEFAUT = {
-    "pincement_haut": {"action": "luminosite", "piece": "salon", "pas": 10},
-    "pincement_bas":  {"action": "luminosite", "piece": "salon", "pas": -10},
-    "main_ouverte":   {"action": "play_pause"},
-    "poing":          {"action": "couper_tts"},
-    "swipe_droite":   {"action": "swipe", "sens": "suivant"},
-    "swipe_gauche":   {"action": "swipe", "sens": "precedent"},
+    "pincement_haut":    {"action": "aucune"},
+    "pincement_bas":     {"action": "aucune"},
+    "ecart_mains_plus":  {"action": "aucune"},
+    "ecart_mains_moins": {"action": "aucune"},
+    "main_ouverte":      {"action": "aucune"},
+    "poing":             {"action": "aucune"},
+    "poing_haut":        {"action": "aucune"},
+    "poing_bas":         {"action": "aucune"},
+    "swipe_droite":      {"action": "aucune"},
+    "swipe_gauche":      {"action": "aucune"},
 }
 # Actions autorisées par geste (garde-fou : rien d'autre ne peut être déclenché).
 _ACTIONS_SURES = {"luminosite", "play_pause", "couper_tts", "obs_scene", "swipe",
-                  "armement"}
+                  "armement", "zoom_ecran", "scroll"}
 
 
 def definir_hooks(couper_tts=None, feedback=None):
@@ -83,6 +87,7 @@ def _conf_tracker(token):
         "confiance_detection": float(reglage("gestes.confiance_detection", 0.7)),
         "confiance_suivi": float(reglage("gestes.confiance_suivi", 0.7)),
         "armement": reglage("gestes.armement", {"actif": False}) or {"actif": False},
+        "souris": reglage("gestes.souris", {"actif": False}) or {"actif": False},
         "url": f"http://127.0.0.1:{port}/api/gestes",
         "token": token,
         "model_path": str(_RACINE / "gestes" / "models" / "hand_landmarker.task"),
@@ -194,6 +199,48 @@ def _executer(action, spec):
         _obs_scene(spec.get("sens", "suivante"))
     elif action == "swipe":
         _swipe(spec.get("sens", "suivant"))
+    elif action == "zoom_ecran":
+        _zoom_ecran(spec.get("sens", "plus"))
+    elif action == "scroll":
+        _scroll(spec.get("sens", "bas"))
+
+
+def _zoom_ecran(sens):
+    """Zoom/dezoom avec Ctrl + molette."""
+    try:
+        import keyboard
+        import mouse
+
+        keyboard.press("ctrl")
+
+        if sens == "plus":
+            mouse.wheel(3)
+        else:
+            mouse.wheel(-3)
+
+        keyboard.release("ctrl")
+
+    except Exception:
+        try:
+            keyboard.release("ctrl")
+        except Exception:
+            pass
+        LOG.exception("gestes: zoom ecran")
+
+
+def _scroll(sens):
+    """Fait defiler la page active (molette virtuelle)."""
+    try:
+        import mouse
+        mouse.wheel(-3 if sens == "bas" else 3)
+    except ImportError:
+        try:
+            import keyboard
+            keyboard.send("page down" if sens == "bas" else "page up")
+        except Exception:
+            LOG.exception("gestes: scroll (fallback clavier)")
+    except Exception:
+        LOG.exception("gestes: scroll")
 
 
 def _verifier_non_n3(nom_outil):

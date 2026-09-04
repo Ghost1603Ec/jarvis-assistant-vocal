@@ -1,3 +1,4 @@
+import json
 """Abstraction du modele de langage : le reste du code ignore quel provider tourne.
 
 Deux implementations, choisies par config.yaml (mode: cloud | local) :
@@ -162,6 +163,7 @@ class OllamaProvider(ProviderLLM):
         # think=false : desactive le "raisonnement" natif (qwen3.5, etc.). Sinon le
         # modele est tres lent et rend parfois ses appels d'outils en texte au lieu
         # de les executer. Un modele sans thinking ignore ce parametre.
+        open('debug.log','a',encoding='utf-8').write('=== PAYLOAD OLLAMA ===\n' + json.dumps(messages, ensure_ascii=False, indent=2) + '\n')
         r = requests.post(f"{self.hote}/api/chat", timeout=120, json={
             "model": self.modele, "messages": messages, "tools": tools,
             "stream": False, "think": bool(reglage("ollama.think", False)),

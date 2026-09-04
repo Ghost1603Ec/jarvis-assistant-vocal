@@ -37,7 +37,8 @@ for _f in (sys.stdout, sys.stderr):
 PORT = 8899
 REDIRECT = f"http://127.0.0.1:{PORT}/callback"
 SCOPES = ("playlist-modify-private playlist-modify-public playlist-read-private "
-          "user-read-email user-read-private")
+          "user-read-email user-read-private user-modify-playback-state "
+          "user-read-playback-state user-library-modify")
 _CODE = {}
 
 

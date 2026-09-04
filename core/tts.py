@@ -144,10 +144,49 @@ class PiperProvider(ProviderTTS):
         try:
             if self._voix is None:
                 self._voix = PiperVoice.load(str(chemin))
-            brut = b"".join(self._voix.synthesize_stream_raw(texte))
+            brut = b"".join(chunk.audio_int16_bytes for chunk in self._voix.synthesize(texte))
             return np.frombuffer(brut, dtype=np.int16), self._voix.config.sample_rate
         except Exception as e:
             print(f"  [Piper] echec ({e}), repli voix Windows.")
+            return None
+
+
+# --------------------------------------------------------------- Edge-TTS (voix Neural, necessite internet)
+
+class EdgeTTSProvider(ProviderTTS):
+    nom = "EdgeTTS"
+
+    def __init__(self):
+        self.voix = reglage("edgetts.voix", "fr-FR-DeniseNeural")
+
+    def disponible(self):
+        return True
+
+    def synthetiser(self, texte):
+        try:
+            import asyncio
+            import io as _io
+            import edge_tts
+            import numpy as np
+            import miniaudio
+        except ImportError:
+            print("  [EdgeTTS] librairie absente. Installe : uv add edge-tts")
+            return None
+        try:
+            async def _generer():
+                communicate = edge_tts.Communicate(texte, self.voix)
+                tampon = _io.BytesIO()
+                async for morceau in communicate.stream():
+                    if morceau["type"] == "audio":
+                        tampon.write(morceau["data"])
+                return tampon.getvalue()
+            mp3 = asyncio.run(_generer())
+            decode = miniaudio.decode(
+                mp3, nchannels=1, sample_rate=24000,
+                output_format=miniaudio.SampleFormat.SIGNED16)
+            return np.frombuffer(decode.samples, dtype=np.int16), 24000
+        except Exception as e:
+            print(f"  [EdgeTTS] echec ({e}), repli voix Windows.")
             return None
 
 
@@ -200,7 +239,12 @@ def tts():
         m = mode_actuel()
         if m == "local":
             moteur = (reglage("voix_locale", "piper") or "piper").lower()
-            _TTS = KokoroProvider() if moteur == "kokoro" else PiperProvider()
+            if moteur == "kokoro":
+                _TTS = KokoroProvider()
+            elif moteur == "edgetts":
+                _TTS = EdgeTTSProvider()
+            else:
+                _TTS = PiperProvider()
         else:
             _TTS = ElevenLabsProvider()
         LOG.info("provider TTS : %s (mode %s)", _TTS.nom, m)

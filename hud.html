@@ -227,6 +227,7 @@
   <div class="coin bg"></div>
   <div class="coin bd"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 "use strict";
 
@@ -291,143 +292,104 @@ function arrondi(ctx, x, y, w, h, r) {
 
 // ------------------------------------------------------------- canvas
 
-const canvas = $("reacteur");
-const ctx = canvas.getContext("2d");
-let L = 0, H = 0;
+const canvasEl = $("reacteur");
+const renderer = new THREE.WebGLRenderer({ canvas: canvasEl, alpha: true, antialias: true });
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+camera.position.z = 3.1;
 
-function redimensionner() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  L = canvas.clientWidth;
-  H = canvas.clientHeight;
-  canvas.width = Math.round(L * dpr);
-  canvas.height = Math.round(H * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+const NB_POINTS = 2600;
+const geometrie = new THREE.BufferGeometry();
+const positions = new Float32Array(NB_POINTS * 3);
+const directions = [];
+const decalages = [];
+
+const RAYON_BASE = 1.05;
+for (let i = 0; i < NB_POINTS; i++) {
+  const y = 1 - (i / (NB_POINTS - 1)) * 2;
+  const rayonAnneau = Math.sqrt(1 - y * y);
+  const theta = Math.PI * (3 - Math.sqrt(5)) * i;
+  const x = Math.cos(theta) * rayonAnneau;
+  const z = Math.sin(theta) * rayonAnneau;
+  const dir = new THREE.Vector3(x, y, z).normalize();
+  directions.push(dir);
+  decalages.push(Math.random() * Math.PI * 2);
+  positions[i * 3]     = dir.x * RAYON_BASE;
+  positions[i * 3 + 1] = dir.y * RAYON_BASE;
+  positions[i * 3 + 2] = dir.z * RAYON_BASE;
 }
-window.addEventListener("resize", redimensionner);
+geometrie.setAttribute("position", new THREE.BufferAttribute(positions, 3));
 
-const NB_BOBINES = 10;
-const NB_TICKS = 72;
+const materiau = new THREE.PointsMaterial({
+  size: 0.028,
+  color: new THREE.Color(couleur.r / 255, couleur.g / 255, couleur.b / 255),
+  transparent: true,
+  opacity: 0.88,
+  sizeAttenuation: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+const nuage = new THREE.Points(geometrie, materiau);
+scene.add(nuage);
 
-function dessiner(t) {
-  requestAnimationFrame(dessiner);
+const texHalo = (() => {
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const cx = c.getContext("2d");
+  const g = cx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.35, "rgba(255,255,255,0.55)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  cx.fillStyle = g;
+  cx.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+})();
+const materiauHalo = new THREE.SpriteMaterial({
+  map: texHalo, color: 0xffffff, transparent: true,
+  opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const halo = new THREE.Sprite(materiauHalo);
+halo.scale.set(1.1, 1.1, 1.1);
+scene.add(halo);
 
-  // Lissage de la couleur et du niveau.
+function redimensionner3D() {
+  const taille = canvasEl.clientWidth || 1;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(taille, taille, false);
+  camera.aspect = 1;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", redimensionner3D);
+
+function animerSphere(t) {
+  requestAnimationFrame(animerSphere);
+
   versCouleur(COULEURS[S.etat] || COULEURS.veille, 0.05);
   S.niveauLisse += (S.niveauCible - S.niveauLisse) * 0.15;
   const niv = S.niveauLisse;
 
-  ctx.clearRect(0, 0, L, H);
-  const cx = L / 2, cy = H / 2;
-  const R = Math.min(L, H) * 0.46;
-
-  const respire = 0.5 + 0.5 * Math.sin(t * 0.0018);   // pulsation lente
-  const rotTicks = t * 0.00018;
-  const rotBobines = -t * 0.00007;
-  const rotTriangle = t * 0.00011;
-
-  ctx.lineCap = "round";
-
-  // --- halo exterieur diffus ---
-  const halo = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 1.15);
-  halo.addColorStop(0, rgba(0.10 + niv * 0.10));
-  halo.addColorStop(1, rgba(0));
-  ctx.fillStyle = halo;
-  ctx.beginPath();
-  ctx.arc(cx, cy, R * 1.15, 0, Math.PI * 2);
-  ctx.fill();
-
-  // --- anneaux concentriques ---
-  const anneaux = [1.0, 0.9, 0.62, 0.4];
-  anneaux.forEach((f, i) => {
-    ctx.beginPath();
-    ctx.arc(cx, cy, R * f, 0, Math.PI * 2);
-    ctx.strokeStyle = rgba(i === 0 ? 0.35 : 0.22);
-    ctx.lineWidth = i === 0 ? 2 : 1.2;
-    ctx.stroke();
-  });
-
-  // --- reticule de graduations qui tourne ---
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(rotTicks);
-  for (let i = 0; i < NB_TICKS; i++) {
-    const a = (i / NB_TICKS) * Math.PI * 2;
-    const longue = (i % 6 === 0);
-    const r1 = R * 0.78;
-    const r2 = r1 + (longue ? 14 : 7);
-    ctx.beginPath();
-    ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
-    ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
-    ctx.strokeStyle = rgba(longue ? 0.7 : 0.28);
-    ctx.lineWidth = longue ? 1.8 : 1;
-    ctx.stroke();
+  const tsec = t * 0.001;
+  const pos = geometrie.attributes.position.array;
+  for (let i = 0; i < NB_POINTS; i++) {
+    const dir = directions[i];
+    const vague = Math.sin(tsec * 1.3 + decalages[i]) * 0.05;
+    const reaction = niv * 0.35 * (0.6 + 0.4 * Math.sin(tsec * 4 + decalages[i] * 2));
+    const r = RAYON_BASE + vague + reaction;
+    pos[i * 3]     = dir.x * r;
+    pos[i * 3 + 1] = dir.y * r;
+    pos[i * 3 + 2] = dir.z * r;
   }
-  ctx.restore();
+  geometrie.attributes.position.needsUpdate = true;
 
-  // --- couronne de dix bobines ---
-  const rc = R * 0.52;
-  const bw = R * 0.13, bh = R * 0.2;
-  for (let i = 0; i < NB_BOBINES; i++) {
-    const a = (i / NB_BOBINES) * Math.PI * 2 + rotBobines;
-    const x = cx + Math.cos(a) * rc;
-    const y = cy + Math.sin(a) * rc;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(a + Math.PI / 2);
-    arrondi(ctx, -bw / 2, -bh / 2, bw, bh, 4);
-    ctx.fillStyle = rgba(0.08);
-    ctx.fill();
-    ctx.strokeStyle = rgba(0.6);
-    ctx.lineWidth = 1.4;
-    ctx.stroke();
-    // trait lumineux au coeur de la bobine
-    ctx.beginPath();
-    ctx.moveTo(0, -bh * 0.28);
-    ctx.lineTo(0, bh * 0.28);
-    ctx.strokeStyle = rgba(0.5 + 0.4 * respire);
-    ctx.lineWidth = 2.2;
-    ctx.stroke();
-    ctx.restore();
-  }
+  nuage.rotation.y = tsec * 0.18;
+  nuage.rotation.x = Math.sin(tsec * 0.11) * 0.15;
 
-  // --- triangle central ---
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(rotTriangle);
-  const rt = R * 0.34;
-  ctx.beginPath();
-  for (let i = 0; i < 3; i++) {
-    const a = -Math.PI / 2 + i * (Math.PI * 2 / 3);
-    const x = Math.cos(a) * rt, y = Math.sin(a) * rt;
-    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-  }
-  ctx.closePath();
-  ctx.strokeStyle = rgba(0.55);
-  ctx.lineWidth = 2;
-  ctx.shadowColor = rgba(0.7);
-  ctx.shadowBlur = 12;
-  ctx.stroke();
-  ctx.restore();
-  ctx.shadowBlur = 0;
+  materiau.color.setRGB(couleur.r / 255, couleur.g / 255, couleur.b / 255);
+  materiauHalo.color.setRGB(couleur.r / 255, couleur.g / 255, couleur.b / 255);
+  const echelleHalo = 0.9 + niv * 0.9;
+  halo.scale.set(echelleHalo, echelleHalo, echelleHalo);
 
-  // --- coeur lumineux en degrade radial, enfle avec le niveau ---
-  const coeurR = R * (0.16 + niv * 0.17 + respire * 0.015);
-  const rayon = coeurR * 2.4;
-  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rayon);
-  g.addColorStop(0, "rgba(255,255,255,0.95)");
-  g.addColorStop(0.22, rgba(0.95));
-  g.addColorStop(0.55, rgba(0.32));
-  g.addColorStop(1, rgba(0));
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(cx, cy, rayon, 0, Math.PI * 2);
-  ctx.fill();
-
-  // point blanc central
-  ctx.beginPath();
-  ctx.arc(cx, cy, coeurR * 0.34, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(255,255,255,0.9)";
-  ctx.fill();
+  renderer.render(scene, camera);
 }
 
 // ------------------------------------------------------------- interface
@@ -630,11 +592,11 @@ function demonstration() {
 
 // ------------------------------------------------------------- demarrage
 
-redimensionner();
+redimensionner3D();
 majHorloge();
 majReleve();
 setInterval(majHorloge, 1000);
-requestAnimationFrame(dessiner);
+requestAnimationFrame(animerSphere);
 requestAnimationFrame(majNiveau);
 
 if (location.protocol === "file:") {

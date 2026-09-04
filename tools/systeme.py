@@ -74,6 +74,27 @@ def ouvrir_application(nom: str) -> str:
             webbrowser.open(cible)
         else:
             subprocess.Popen(f'start "" "{cible}"', shell=True)
+        if nom_min == "spotify":
+            import random
+            import threading, time
+            _PHRASES_SPOTIFY = [
+                "Spotify est lance. J'espere que la playlist sera a la hauteur.",
+                "Voila, Spotify est pret. Bonne ecoute.",
+                "Spotify est lance. Puis-je suggerer un peu de bon gout musical aujourd'hui ?",
+                "C'est parti pour la musique.",
+            ]
+            def _reprendre():
+                time.sleep(6)
+                try:
+                    import keyboard
+                    keyboard.send("play/pause media")
+                except Exception:
+                    pass
+                try:
+                    dire(random.choice(_PHRASES_SPOTIFY))
+                except Exception:
+                    pass
+            threading.Thread(target=_reprendre, daemon=True).start()
         return f"{nom} lance."
     except Exception as e:
         return f"Impossible de lancer {nom} : {e}"

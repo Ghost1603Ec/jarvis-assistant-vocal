@@ -45,3 +45,21 @@ musique/captures/
 # Cockpit : donnees financieres PERSO (tout le dossier sauf l'exemple versionne).
 finances/*
 !finances/abonnements.example.yaml
+
+# Dumps Wikipedia (trop lourds pour Git)
+*.zim
+
+# Fichiers de sauvegarde locaux
+*.bak
+
+# Fichiers audio de test TTS
+test_*.mp3
+
+# Logs de debug
+debug.log
+
+# Anciennes sauvegardes HTML
+*_ancien_backup.html
+
+# Donnees locales (cache Wikipedia, etc. - trop lourd pour Git)
+data/

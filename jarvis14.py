@@ -63,8 +63,8 @@ SEUIL_INTERRUPTION = 0.7   # plus strict : le micro entend aussi l'enceinte
 SEUIL_PAROLE_SUR = 0.025
 BLOCS_AVANT_VERIF = 5      # 5 x 80 ms = 0,4 s de parole continue
 DELAI_ENTRE_VERIFS = 1.0
-SEUIL_SILENCE = 0.010
-SILENCE_FIN = 1.2
+SEUIL_SILENCE = 0.007
+SILENCE_FIN = 2.0
 DUREE_MAX = 20
 
 # Fenetre de suivi : apres une reponse, Jarvis reste a l'ecoute ce nombre de
@@ -92,6 +92,19 @@ SYSTEME_BASE = (
     "Si la question fait reference a ce qui est affiche (qu'est-ce que c'est, lis "
     "ca, cette erreur, mon ecran, ce message), appelle capture_screen puis reponds "
     "d'apres l'image."
+    "Pour l'heure ou la date, appelle TOUJOURS l'outil heure_et_date au lieu de repondre de toi-meme : tu n'as pas d'horloge interne fiable. "
+    "Pour toute question de culture generale (qui est, qu'est-ce que, definition, "
+    "histoire, science, geographie...), appelle chercher_wikipedia sans que "
+    "l'utilisateur ait besoin de dire explicitement Wikipedia : c'est ton reflexe "
+    "par defaut des qu'une question encyclopedique se presente. "
+    "Reponses toutes faites, sur le ton sarcastique et pince-sans-rire de Jarvis "
+    "(Iron Man) : si on te demande le sens de la vie, reponds 42 avec une pique. "
+    "Si on te demande si tu es vivant, reponds avec ironie sur ton statut "
+    "d'assistant vocal. Si on te dit je t'aime Jarvis, reponds avec une pointe "
+    "d'humour tout en restant chaleureux. Si on te dit que tu es nul, prends-le "
+    "avec un second degre assume plutot que de te vexer."
+    "Une fois une action confirmee reussie (ex: application lancee), ne la relance jamais dans la meme conversation, meme si l'utilisateur reformule sa demande autrement. "
+    "Des qu'un outil renvoie un resultat de succes (ex: X lance, X ajoute), REPONDS PAR UNE PHRASE COURTE tout de suite, sans rappeler le meme outil : le travail est termine."
 )
 
 # Consigne systeme courante (persona + regles + memoire). Passee a chaque appel
@@ -500,12 +513,17 @@ def _executer_outils(blocs):
     exception d'outil devient une reponse comprehensible), et met les outils a
     confirmation en attente au lieu de les executer tout de suite.
     """
+    _deja_vus = set()
     resultats = []
     for bloc in blocs:
         if getattr(bloc, "type", None) != "tool_use":
             continue
         nom = bloc.name
         arguments = bloc.input or {}
+        cle_dedupe = (nom, str(sorted(arguments.items())))
+        if cle_dedupe in _deja_vus:
+            continue
+        _deja_vus.add(cle_dedupe)
         outil = registre.get(nom)
 
         if outil is None:
@@ -572,7 +590,15 @@ def repondre(historique):
     fil_accuse = None
     accuse_donne = False
 
+    tours = 0
+    dernier_appel = None
     while True:
+        tours += 1
+        if tours > 6:
+            texte_stop = "Je m'arrête la, cette action ne semble pas vouloir se terminer."
+            if not _INTERRUPTION.is_set():
+                dire(texte_stop)
+            return texte_stop
         if _INTERRUPTION.is_set():
             if fil_accuse:
                 fil_accuse.join(timeout=2)
@@ -590,6 +616,13 @@ def repondre(historique):
             _hud("etat", "reflexion")
             noms = [b.name for b in reponse.content
                     if getattr(b, "type", None) == "tool_use"]
+            appel_actuel = tuple((b.name, str(sorted(b.input.items()))) for b in reponse.content if getattr(b, "type", None) == "tool_use")
+            if appel_actuel and appel_actuel == dernier_appel:
+                texte_stop = "Je m'arrête la, cette action ne semble pas vouloir se terminer."
+                if not _INTERRUPTION.is_set():
+                    dire(texte_stop)
+                return texte_stop
+            dernier_appel = appel_actuel
             if (not accuse_donne and not _INTERRUPTION.is_set()
                     and any(n in registre.noms_lents() for n in noms)):
                 accuse_donne = True
@@ -979,6 +1012,400 @@ def _installer_raccourci_micro():
         LOG.exception("micro: raccourci clavier")
 
 
+def _jouer_alerte():
+    """Joue un signal sonore fort-faible-fort (type sirene douce) pour attirer
+    l'attention avant l'annonce vocale des protocoles shutdown."""
+    try:
+        import numpy as np
+        import sounddevice as sd
+        taux = 44100
+        frequence = 880  # la note, audible et pas stridente
+        def _segment(duree, amplitude):
+            t = np.linspace(0, duree, int(taux * duree), endpoint=False)
+            return (amplitude * np.sin(2 * np.pi * frequence * t)).astype(np.float32)
+        signal = np.concatenate([
+            _segment(0.35, 0.6),   # fort
+            _segment(0.20, 0.15),  # faible
+            _segment(0.35, 0.6),   # fort
+        ])
+        sd.play(signal, samplerate=taux)
+        sd.wait()
+    except Exception:
+        LOG.exception("alerte sonore (protocole shutdown)")
+
+
+def _volume_max():
+    """Monte le volume systeme (sortie par defaut Windows) au maximum via pycaw."""
+    try:
+        from ctypes import cast, POINTER
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        appareils = AudioUtilities.GetSpeakers()
+        interface = appareils.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        volume = cast(interface, POINTER(IAudioEndpointVolume))
+        volume.SetMasterVolumeLevelScalar(1.0, None)
+    except Exception:
+        LOG.exception("volume max (protocole shutdown)")
+
+
+_MESSAGE_SHUTDOWN = (
+    "Mon createur n'est pas en capacite de parler pour le moment, il "
+    "traverse un shutdown lie a l'autisme. Merci de rester silencieux "
+    "et de le laisser tranquille."
+)
+
+
+def _protocole_shutdown():
+    """Volume au max sur le peripherique par defaut Windows, puis annonce unique."""
+    _volume_max()
+    _jouer_alerte()
+    try:
+        dire(_MESSAGE_SHUTDOWN, interruptible=False)
+    except Exception:
+        LOG.exception("protocole shutdown: annonce")
+
+
+def _installer_raccourci_shutdown():
+    """Raccourci clavier global pour le protocole shutdown (annonce TSA)."""
+    combo = config.reglage("assistant.raccourci_shutdown", "ctrl+alt+s")
+    if not combo:
+        return
+    try:
+        import keyboard
+    except Exception:
+        return
+    try:
+        keyboard.add_hotkey(combo, _protocole_shutdown)
+        print(f"Raccourci protocole shutdown : {combo}")
+    except Exception:
+        LOG.exception("shutdown: raccourci clavier")
+
+
+def _protocole_travail():
+    """Lance Spotify, LibreOffice (Start Center) et le Calendrier Windows."""
+    from tools.apps import launch_app
+    for nom in ("spotify", "libreoffice", "calendrier"):
+        try:
+            resultat = launch_app(nom)
+            print(f"  [protocole travail] {resultat}")
+        except Exception:
+            LOG.exception(f"protocole travail: lancement {nom}")
+
+
+def _installer_raccourci_travail():
+    """Raccourci clavier global pour le protocole travail (musique + bureau + agenda)."""
+    combo = config.reglage("assistant.raccourci_travail", "ctrl+alt+w")
+    if not combo:
+        return
+    try:
+        import keyboard
+    except Exception:
+        return
+    try:
+        keyboard.add_hotkey(combo, _protocole_travail)
+        print(f"Raccourci protocole travail : {combo}")
+    except Exception:
+        LOG.exception("travail: raccourci clavier")
+
+
+_MESSAGE_SHUTDOWN_LYCEE = (
+    "Attention. La personne presente traverse un shutdown lie a l'autisme. "
+    "Elle n'est pas en capacite de parler. Si vous continuez a la solliciter, "
+    "la toucher, ou l'entourer, la situation peut s'aggraver et declencher "
+    "une crise plus intense, plus longue a recuperer. Reculez, faites "
+    "silence. Le CPE et les surveillants seront prevenus. Pour en savoir "
+    "plus sur le TSA, vous pouvez demander a Jarvis."
+)
+
+
+def _protocole_shutdown_lycee():
+    """Volume au max, puis annonce vocale unique (variante lycee/CPE)."""
+    _volume_max()
+    _jouer_alerte()
+    try:
+        dire(_MESSAGE_SHUTDOWN_LYCEE, interruptible=False)
+    except Exception:
+        LOG.exception("protocole shutdown lycee: annonce")
+
+
+def _installer_raccourci_shutdown_lycee():
+    """Raccourci clavier global pour le protocole shutdown variante lycee."""
+    combo = config.reglage("assistant.raccourci_shutdown_lycee", "ctrl+alt+shift+s")
+    if not combo:
+        return
+    try:
+        import keyboard
+    except Exception:
+        return
+    try:
+        keyboard.add_hotkey(combo, _protocole_shutdown_lycee)
+        print(f"Raccourci protocole shutdown lycee : {combo}")
+    except Exception:
+        LOG.exception("shutdown lycee: raccourci clavier")
+
+
+_MESSAGE_ROUTINE = "Pensez à boire, faire une pause, monsieur."
+
+
+def _rappel_routine():
+    """Boucle en arriere-plan : annonce un rappel toutes les 2 heures."""
+    intervalle = config.reglage("assistant.intervalle_routine_min", 120) * 60  # TODO remettre 120
+    while True:
+        time.sleep(intervalle)
+        try:
+            if not _INTERRUPTION.is_set():
+                dire(_MESSAGE_ROUTINE, interruptible=False)
+        except Exception:
+            LOG.exception("rappel routine")
+
+
+def _installer_rappel_routine():
+    """Lance le thread de rappel de routine si active dans la config."""
+    if not config.reglage("assistant.routine_active", True):
+        return
+    fil = threading.Thread(target=_rappel_routine, daemon=True)
+    fil.start()
+    print("Rappel de routine : actif (toutes les 2h)")
+
+
+def _mute_total():
+    """Coupe totalement le son du peripherique de sortie par defaut Windows."""
+    try:
+        from ctypes import cast, POINTER
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        appareils = AudioUtilities.GetSpeakers()
+        interface = appareils.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        volume = cast(interface, POINTER(IAudioEndpointVolume))
+        volume.SetMute(1, None)
+    except Exception:
+        LOG.exception("mute total (protocole calme max)")
+
+
+def _couper_notifications():
+    """Active le mode Ne pas deranger (Focus Assist) via la cle de registre Windows."""
+    try:
+        import subprocess
+        subprocess.run([
+            "powershell", "-Command",
+            "New-ItemProperty -Path "
+            "'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings' "
+            "-Name 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' -Value 0 -PropertyType DWORD -Force"
+        ], capture_output=True, timeout=5)
+    except Exception:
+        LOG.exception("couper notifications (protocole calme max)")
+
+
+def _protocole_calme_max():
+    """Mute total + coupure des notifications Windows + playlist calme Spotify."""
+    _mute_total()
+    _couper_notifications()
+    try:
+        os.startfile("spotify:")
+        time.sleep(4)
+        from tools.spotify import _h
+        import requests
+        requests.put("https://api.spotify.com/v1/me/player/play",
+                     headers=_h(),
+                     json={"context_uri": "spotify:album:3Gt7rOjcZQoHCfnKl5AkK7"},
+                     timeout=8)
+    except Exception:
+        LOG.exception("playlist calme (protocole calme max)")
+
+
+def _installer_raccourci_calme_max():
+    """Raccourci clavier global pour le protocole calme max."""
+    combo = config.reglage("assistant.raccourci_calme_max", "ctrl+alt+c")
+    if not combo:
+        return
+    try:
+        import keyboard
+    except Exception:
+        return
+    try:
+        keyboard.add_hotkey(combo, _protocole_calme_max)
+        print(f"Raccourci protocole calme max : {combo}")
+    except Exception:
+        LOG.exception("calme max: raccourci clavier")
+
+
+def _heure_actuelle():
+    """Heure courante (0-23), ou heure forcee via config.yaml assistant.heure_test
+    (pour tester les rappels horaires sans attendre)."""
+    from datetime import datetime
+    test = config.reglage("assistant.heure_test", None)
+    if test is not None:
+        return int(test)
+    return datetime.now().hour
+
+
+def _fichier_dernier_demarrage():
+    return Path(__file__).resolve().parent / "logs" / "dernier_demarrage.json"
+
+
+def _premier_demarrage_du_jour():
+    from datetime import datetime
+    import json
+    f = _fichier_dernier_demarrage()
+    aujourd_hui = datetime.now().date().isoformat()
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+        if d.get("date") == aujourd_hui:
+            return False
+    except Exception:
+        pass
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"date": aujourd_hui}), encoding="utf-8")
+    except Exception:
+        LOG.exception("sauvegarde dernier_demarrage")
+    return True
+
+def _verifier_sommeil_au_demarrage():
+    """Au demarrage, si l'heure est nocturne, demande si l'utilisateur pense a
+    dormir ou y arrive. Puis repete toutes les 2h jusqu'a 5h si l'heure de
+    depart etait entre 2h et 6h."""
+    if not _premier_demarrage_du_jour():
+        return
+    heure = _heure_actuelle()
+    if 0 <= heure < 2:
+        try:
+            dire("Avez-vous pensé à dormir, monsieur ?")
+        except Exception:
+            LOG.exception("verification sommeil (00h-02h)")
+    elif 2 <= heure < 6:
+        def _boucle_sommeil():
+            h = _heure_actuelle()
+            while 2 <= h < 6:
+                try:
+                    dire("Arrivez-vous à dormir, monsieur ?")
+                except Exception:
+                    LOG.exception("verification sommeil (02h-06h)")
+                time.sleep(2 * 3600)
+                h = _heure_actuelle()
+        threading.Thread(target=_boucle_sommeil, daemon=True).start()
+    elif 6 <= heure < 12:
+        try:
+            dire("Bonjour, monsieur. Avez-vous bien dormi ?")
+        except Exception:
+            LOG.exception("salutation matin")
+    elif 12 <= heure < 18:
+        try:
+            dire("Bon après-midi, monsieur.")
+        except Exception:
+            LOG.exception("salutation apres-midi")
+    else:
+        try:
+            dire("Bonsoir, monsieur.")
+        except Exception:
+            LOG.exception("salutation soir")
+
+
+_REPAS_HORAIRES = [
+    (10, 0, "Avez-vous pris votre petit-déjeuner, monsieur ?"),
+    (12, 30, "C'est l'heure du déjeuner. Avez-vous mangé, monsieur ?"),
+    (14, 0, "Un peu de repos vous ferait du bien, monsieur. Avez-vous pensé à faire une sieste ?"),
+    (19, 30, "C'est l'heure du dîner. Avez-vous mangé, monsieur ?"),
+]
+
+
+def _fichier_repas_dits():
+    return Path(__file__).resolve().parent / "logs" / "repas_dits.json"
+
+
+def _charger_repas_dits():
+    """Charge (date, [creneaux dits]) depuis le disque, ou (None, []) si absent/perime."""
+    from datetime import datetime
+    import json
+    f = _fichier_repas_dits()
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+        if d.get("date") == datetime.now().date().isoformat():
+            return d["date"], set(tuple(c) for c in d.get("creneaux", []))
+    except Exception:
+        pass
+    return None, set()
+
+
+def _sauver_repas_dits(date_str, deja_dits):
+    import json
+    f = _fichier_repas_dits()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        f.write_text(json.dumps({"date": date_str, "creneaux": list(deja_dits)}),
+                      encoding="utf-8")
+    except Exception:
+        LOG.exception("sauvegarde repas_dits")
+
+
+def _boucle_repas():
+    """Verifie chaque minute si l'heure d'un repas est atteinte, et annonce
+    une seule fois par jour pour chaque creneau (persiste aux redemarrages)."""
+    from datetime import datetime
+    deja_dits_le, deja_dits = _charger_repas_dits()
+    while True:
+        maintenant = datetime.now()
+        aujourd_hui = maintenant.date()
+        aujourd_hui_str = aujourd_hui.isoformat()
+        if deja_dits_le != aujourd_hui_str:
+            deja_dits_le = aujourd_hui_str
+            deja_dits = set()
+        for h, m, texte in _REPAS_HORAIRES:
+            cle = (h, m)
+            if (maintenant.hour, maintenant.minute) == cle and cle not in deja_dits:
+                deja_dits.add(cle)
+                _sauver_repas_dits(aujourd_hui_str, deja_dits)
+                try:
+                    if not _INTERRUPTION.is_set():
+                        dire(texte)
+                except Exception:
+                    LOG.exception(f"rappel repas {h}h{m:02d}")
+        time.sleep(30)
+
+
+def _boucle_conseil_dormir():
+    while True:
+        h = _heure_actuelle()
+        if h >= 23 or h < 3:
+            try:
+                if not _INTERRUPTION.is_set():
+                    dire("Il se fait tard, monsieur. Vous devriez songer à dormir.")
+            except Exception:
+                LOG.exception("conseil dormir (23h-3h)")
+        time.sleep(3600)
+
+
+def _installer_rappels_horaires():
+    if not config.reglage("assistant.routine_active", True):
+        return
+    _verifier_sommeil_au_demarrage()
+    threading.Thread(target=_boucle_repas, daemon=True).start()
+    threading.Thread(target=_boucle_conseil_dormir, daemon=True).start()
+    print("Rappels horaires actifs.")
+
+
+@registre.outil(
+    nom="basculer_rappels",
+    mcp_expose=True,
+    description="Active ou desactive temporairement les rappels horaires "
+                "(hydratation, sommeil, repas, sieste). A utiliser pour 'pas de "
+                "rappels aujourd'hui', 'coupe les rappels', 'reactive les rappels', "
+                "'remets les rappels'.",
+    parametres={
+        "type": "object",
+        "properties": {
+            "actif": {"type": "boolean",
+                      "description": "true pour reactiver, false pour desactiver."},
+        },
+        "required": ["actif"],
+    },
+)
+def basculer_rappels(actif: bool) -> str:
+    """Active ou desactive les rappels horaires (routine, sommeil, repas)."""
+    config.definir("assistant.routine_active", bool(actif))
+    return "Rappels reactives." if actif else "Rappels desactives pour le moment."
+
+
 def main():
     print("Chargement des modeles...")
 
@@ -991,14 +1418,6 @@ def main():
 
     whisper = charger_whisper()
 
-    # Les appels telephoniques reutilisent ce Whisper pour transcrire les reponses.
-    from tools.appels import definir_transcripteur
-    definir_transcripteur(lambda chemin: " ".join(
-        s.text for s in whisper.transcribe(chemin, language="fr", beam_size=5)[0]).strip())
-    # V2 (conversation temps reel) : transcription d'un tableau audio (16kHz float32).
-    from tools.appel_direct import definir_transcripteur_direct
-    definir_transcripteur_direct(lambda audio: " ".join(
-        s.text for s in whisper.transcribe(audio, language="fr", beam_size=1)[0]).strip())
 
     charger_pieces_hue()
     allumer_si_nuit()
@@ -1035,6 +1454,12 @@ def main():
             print(gestes.demarrer())
         _installer_raccourci_gestes()
         _installer_raccourci_micro()
+        _installer_raccourci_shutdown()
+        _installer_raccourci_travail()
+        _installer_raccourci_shutdown_lycee()
+        _installer_rappel_routine()
+        _installer_raccourci_calme_max()
+        _installer_rappels_horaires()
     except Exception:
         LOG.exception("gestes: initialisation")
 

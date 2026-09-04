@@ -53,7 +53,27 @@ def launch_app(nom: str) -> str:
                 "slash numero), et je l'ajouterai.")
     cible = apps[clef]
     try:
-        os.startfile(cible)   # gere .exe, fichiers, et protocoles (steam://, spotify:)
+        if " --" in cible:
+            import shlex
+            import subprocess
+            parties = shlex.split(cible, posix=False)
+            subprocess.Popen(parties)
+        else:
+            os.startfile(cible)
+        if clef == "spotify":
+            import threading
+            import time
+            def _reprendre():
+                time.sleep(8)
+                try:
+                    from tools.spotify import _h
+                    import requests
+                    r = requests.put("https://api.spotify.com/v1/me/player/play",
+                                 headers=_h(), timeout=8)
+                    print(f"  [spotify] reprise : code {r.status_code} - {r.text[:200]}")
+                except Exception as e:
+                    print(f"  [spotify] echec : {e}")
+            threading.Thread(target=_reprendre, daemon=True).start()
         return f"{clef} lance."
     except Exception as e:
         return f"Impossible de lancer {clef} : {e}"
