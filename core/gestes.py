@@ -214,9 +214,9 @@ def _zoom_ecran(sens):
         keyboard.press("ctrl")
 
         if sens == "plus":
-            mouse.wheel(3)
+            mouse.wheel(1)
         else:
-            mouse.wheel(-3)
+            mouse.wheel(-1)
 
         keyboard.release("ctrl")
 

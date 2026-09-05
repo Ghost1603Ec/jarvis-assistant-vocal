@@ -138,15 +138,16 @@ class MachineGestes:
 
                 if self._dist_2mains_base is None:
                     self._dist_2mains_base = dist
+                    return None
 
-                elif self._arme(t) and self._cooldown_ok(t):
-                    if dist > self._dist_2mains_base + self.zoom_2mains_seuil:
-                        self._dist_2mains_base = dist
+                ecart = dist - self._dist_2mains_base
+
+                if self._arme(t) and self._cooldown_ok(t):
+                    if ecart > self.zoom_2mains_seuil:
                         self._dernier_envoi = t
                         return "ecart_mains_plus"
 
-                    if dist < self._dist_2mains_base - self.zoom_2mains_seuil:
-                        self._dist_2mains_base = dist
+                    if ecart < -self.zoom_2mains_seuil:
                         self._dernier_envoi = t
                         return "ecart_mains_moins"
             else:
@@ -388,6 +389,7 @@ def centre_paume(lm):
 def boucle(conf, calibrer=False):
     device = int(conf.get("device", 0))
     fps = int(conf.get("fps", 24))
+    montrer_cam = bool(conf.get("retour_cam", True))
     url = conf.get("url", "http://127.0.0.1:8790/api/gestes")
     token = conf.get("token", "")
     modele = conf.get("model_path", "gestes/models/hand_landmarker.task")
@@ -439,15 +441,41 @@ def boucle(conf, calibrer=False):
                 k = cv2.waitKey(1) & 0xFF
                 if not _touches_calibration(k, fsm):
                     break
+            elif montrer_cam:
+                _afficher_retour(frame, lm, lm2, fsm, souris, geste)
 
             dt = time.time() - t0
             if dt < periode:
                 time.sleep(periode - dt)
     finally:
         cap.release()
-        if calibrer:
+        if calibrer or montrer_cam:
             cv2.destroyAllWindows()
         landmarker.close()
+
+
+def _afficher_retour(frame, lm, lm2, fsm, souris, geste):
+    h, w = frame.shape[:2]
+    if lm is not None:
+        for x, y in lm:
+            cv2.circle(frame, (int(x * w), int(y * h)), 4, (0, 255, 0), -1)
+    if lm2 is not None:
+        for x, y in lm2:
+            cv2.circle(frame, (int(x * w), int(y * h)), 4, (255, 0, 255), -1)
+    if souris.maintien_actif:
+        etat_clic = "MAINTIEN"
+    elif souris.clic_en_attente:
+        etat_clic = "en attente"
+    else:
+        etat_clic = "relache"
+    infos = [f"clic/maintien : {etat_clic}"]
+    if geste:
+        infos.insert(0, f">>> GESTE : {geste}")
+    for i, ligne in enumerate(infos):
+        cv2.putText(frame, ligne, (10, 24 + i * 22), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (0, 255, 255), 1, cv2.LINE_AA)
+    cv2.imshow("Jarvis - retour camera", frame)
+    cv2.waitKey(1)
 
 
 # --------------------------------------------------------- mode calibration
