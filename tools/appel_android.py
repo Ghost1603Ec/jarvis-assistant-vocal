@@ -23,7 +23,7 @@ def _decouvrir_service_mdns():
     """Cherche un service ADB decouvert par mDNS (debogage sans fil deja appaire)."""
     try:
         res = subprocess.run(["adb", "mdns", "services"], capture_output=True,
-                             text=True, timeout=10)
+                             encoding="utf-8", errors="replace", timeout=10)
     except Exception:
         return None
     for ligne in res.stdout.splitlines():
@@ -41,7 +41,7 @@ def assurer_connexion_adb():
     try:
         subprocess.run(["adb", "start-server"], capture_output=True, timeout=10)
         res = subprocess.run(["adb", "devices"], capture_output=True,
-                             text=True, timeout=10)
+                             encoding="utf-8", errors="replace", timeout=10)
         if any("\tdevice" in l for l in res.stdout.splitlines()):
             print("[appel_android] telephone deja connecte via ADB.")
             return
@@ -60,7 +60,7 @@ def _lister_appareils():
     """Renvoie la liste des identifiants d'appareils ADB actuellement 'device'."""
     try:
         res = subprocess.run(["adb", "devices"], capture_output=True,
-                              text=True, timeout=5)
+                              encoding="utf-8", errors="replace", timeout=5)
     except Exception:
         return []
     appareils = []
@@ -94,7 +94,7 @@ def _adb(*args):
                             "(verifie le debogage sans fil).")
     base = ["adb", "-s", cible]
     return subprocess.run(base + list(args), capture_output=True,
-                          text=True, timeout=10)
+                          encoding="utf-8", errors="replace", timeout=10)
 
 
 def _lister_contacts():
@@ -152,8 +152,11 @@ def _chercher_contact(nom_demande):
         "required": ["nom"],
     },
 )
-def appeler_contact(nom: str) -> str:
+def appeler_contact(nom: str = None, contact: str = None, **_ignores) -> str:
     """Cherche le contact et lance l'appel via ADB (ACTION_CALL)."""
+    nom = nom or contact
+    if not nom:
+        return "Aucun nom de contact fourni."
     try:
         trouve = _chercher_contact(nom)
     except RuntimeError as e:
