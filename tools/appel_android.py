@@ -157,10 +157,16 @@ def appeler_contact(nom: str = None, contact: str = None, **_ignores) -> str:
     nom = nom or contact
     if not nom:
         return "Aucun nom de contact fourni."
+    if _cible_adb() is None:
+        return ("Le telephone n'est pas connecte via ADB (debogage sans fil "
+                "probablement deconnecte -- reconnecte-le).")
     try:
         trouve = _chercher_contact(nom)
     except RuntimeError as e:
         return str(e)
+    except Exception:
+        return ("Le telephone ne repond pas (peut-etre deconnecte du reseau "
+                "ou du debogage sans fil).")
 
     if trouve is None:
         return f"Contact introuvable : {nom}."
