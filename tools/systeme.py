@@ -30,7 +30,10 @@ def _presser(code, fois=1):
 
 @outil(
     nom="ouvrir_application",
-    description="Lance une application ou ouvre un site web",
+    description="Lance une application ou ouvre un site web (spotify, discord, "
+                "youtube, calculatrice...). NE PAS utiliser pour 'appelle X' ou "
+                "'telephone a X' -- dans ce cas utilise TOUJOURS appeler_contact, "
+                "jamais ouvrir_application('telephone').",
     parametres={
         "type": "object",
         "properties": {
