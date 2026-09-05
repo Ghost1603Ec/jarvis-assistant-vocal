@@ -1421,6 +1421,11 @@ def main():
 
     charger_pieces_hue()
     allumer_si_nuit()
+    try:
+        from tools.appel_android import assurer_connexion_adb
+        assurer_connexion_adb()
+    except Exception as e:
+        print(f"[appel_android] connexion ADB au demarrage impossible : {e}")
 
     from tools.presence import demarrer_presence
     demarrer_presence()

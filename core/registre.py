@@ -116,7 +116,7 @@ def exposes_mcp():
 #                 quel que soit le store : le "toujours autoriser" n'ouvre RIEN a distance.)
 _N3 = frozenset({
     "envoyer_mail", "mettre_a_la_corbeille",
-    "call_with_message", "call_and_book",
+    "call_with_message", "call_and_book", "appeler_contact",
     "book_appointment", "confirmer_reservation",
     "delete_event",
     "eteindre_pc",
