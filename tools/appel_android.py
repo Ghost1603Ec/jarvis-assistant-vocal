@@ -136,7 +136,7 @@ def _chercher_contact(nom_demande):
 @outil(
     nom="appeler_contact",
     mcp_expose=False,
-    confirmation=True,
+    confirmation=False,
     description="Compose un appel telephonique SUR LE VRAI TELEPHONE de "
                 "l'utilisateur (pas Jarvis qui parle -- c'est l'utilisateur qui "
                 "va parler). A utiliser pour 'appelle X', 'telephone a X'.",
